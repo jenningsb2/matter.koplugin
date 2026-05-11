@@ -1,224 +1,162 @@
-# Instapaper Plugin for KOReader
+# Matter Plugin for KOReader
 
-Download and read articles from your Instapaper account directly in KOReader.
+Download and read articles from your [Matter](https://web.getmatter.com) reading library directly in KOReader.
+
+> Forked from a KOReader Instapaper plugin and rewritten against the [Matter Public API](https://docs.getmatter.com/api).
 
 ## Features
 
-- **OAuth 1.0a authentication** using Instapaper's official Full API
-- Browse **Unread**, **Starred**, **Archived**, and **custom folders**
-- **Download and read** articles as HTML or EPUB in KOReader's built-in reader
-- **EPUB output** — articles can be saved as EPUB files with optional image inclusion
-- **Download only** (long-press → Download) without leaving the list — enables multi-article downloads
-- **Article info on long-press**: date saved, word count, estimated reading time, progress, and source URL
-- **Manage articles**: Archive, Delete, Star (via long-press)
-- **Bulk download** with folder, time period, and post-download action (archive/delete/none)
+- **Bearer token authentication** using a personal access token from Matter
+- Browse **Inbox**, **Queue**, **Favorites**, **Archive**, and items by **tag**
+- **Search** across your library
+- **Download and read** articles as HTML or EPUB in KOReader's reader
+- **Markdown → HTML conversion** with footnotes, lists, code blocks, links, and inline emphasis
+- **EPUB output** with optional image embedding
+- **Download only** (long-press → Download) so you can queue several articles without leaving the list
+- **Article metadata** on long-press: author, site, word count, reading time, progress, source URL
+- **Manage articles**: Archive, Favorite/Unfavorite, Mark read, Delete
+- **Bulk download** with source filter, period filter, and post-download action
 - **Auto WiFi connect** — triggers network connection automatically when needed
-- **Title injection** — missing article titles are added as a heading in the downloaded HTML
-- **Reading progress** display (percentage read)
-- **Configurable article list limit** — fetch up to 10, 25, 50, 100, 200, or 500 articles at once
-- **Send to Instapaper** — Add web links to Instapaper directly from document link popups
+- **Reading-progress display** in the article list
+- **Save URL to Matter** — Add web links to Matter directly from document link popups
 - **Offline queue** — Links are queued when offline and automatically sent when network becomes available
-- **Auto WiFi connect for links** — Configurable automatic network connection when adding links
 - **Open downloads folder** shortcut in the menu
-- **Clear downloads cache** — delete all downloaded files and folders with a single tap
-- **Persistent credentials** — stay logged in across sessions
+- **Clear downloads cache** — delete all downloaded files with a single tap
 
 ## Installation
 
-1. Copy the `instapaper.koplugin` folder to your KOReader plugins directory:
-   - For most devices: `koreader/plugins/instapaper.koplugin/`
-   
-2. Restart KOReader
+1. Copy the `matter.koplugin` folder to your KOReader plugins directory:
+   - For most devices: `koreader/plugins/matter.koplugin/`
+
+2. Restart KOReader.
 
 ## Setup
 
-### 1. Get OAuth Consumer Credentials
+### 1. Get a Matter API token
 
-Before you can use this plugin, you need to create OAuth consumer credentials on Instapaper:
+Matter API access requires a Matter Pro subscription.
 
-1. Visit: <https://www.instapaper.com/developers/applications/create>
-2. Fill out the form with your application details. Example:
-    1. Title: `<your name> Personal`
-    2. Description: `Accessing Instapaper via KOReader`
-    3. URL: `https://koreader.rocks/`
-    4. Admin Email: `your@email.com`
-3. After you submit the **Consumer Key** and **Consumer Secret** are displayed. Copy these values.
-4. Leave the OAuth key as "Owner Only" (the default). You do not need to click "Submit for Review".
+1. Visit <https://web.getmatter.com/settings>
+2. Click **Generate API Token**
+3. Copy the token (it starts with `mat_`). Treat it like a password.
 
-### 2. Configure the Plugin
+### 2. Configure the plugin
 
-#### Option A: Via KOReader Menu (Recommended)
+1. Open KOReader → main menu → **Tools** → **Matter**.
+2. Select **Set API token**.
+3. Paste the token and tap **Save**.
 
-1. Open KOReader and go to the main menu (tap the top of the screen)
-2. Navigate to **Tools** → (2nd or 3rd page) → **Instapaper**
-3. Select **API credentials**
-4. Enter your **Consumer Key** and **Consumer Secret**
-5. Tap **Save**
-
-#### Option B: Manual Configuration File
-
-Alternatively, you can create a configuration file manually:
-
-1. Create a file named `instapaper.lua` with the following content:
-   ```lua
-   -- instapaper.lua
-   return {
-       ["consumer_key"] = "your_consumer_key_here",
-       ["consumer_secret"] = "your_consumer_secret_here",
-   }
-   ```
-
-2. Copy this file to your KOReader settings directory:
-   - **Kobo/Kindle/Android**: `koreader/settings/instapaper.lua`
-   - **Desktop/Emulator**: `~/.config/koreader/settings/instapaper.lua` (Linux/macOS) or `%APPDATA%\koreader\settings\instapaper.lua` (Windows)
-
-3. Restart KOReader
-
-### 3. Log In
-
-1. In the Instapaper menu, select **Log in**
-2. Enter your Instapaper **email or username**
-3. Enter your **password** (leave blank if you don't have one)
-4. Tap **Login**
-
-Once logged in, your OAuth tokens are saved and you won't need to log in again unless you explicitly log out.
+The plugin will verify the token by calling `/me`. On success, your account email is stored alongside the token in `settings/matter.lua`.
 
 ## Usage
 
-### Browse Articles
+### Browse
 
-From the Instapaper menu, choose:
-- **Unread articles** — Your reading list
-- **Starred articles** — Articles you've starred
-- **Archived articles** — Completed articles
-- **Custom folders** — Lists your user-created Instapaper folders; tap one to browse its articles
+From the Matter menu:
 
-### Read an Article
+- **Inbox** — Items in your Matter inbox (`status = inbox`)
+- **Queue** — Items you've added to your reading queue
+- **Favorites** — Anything you've favorited (★)
+- **Archive** — Completed/archived items
+- **Tags** — Lists every tag in your library; tap a tag to browse items with that tag
+- **Search…** — Full-text search across your library (Matter operators are supported: `"exact phrase"`, `-excluded`, `by:author`, `site:domain`, `title:word`)
 
-- **Tap** an article to download and open it in KOReader's reader
-- Articles are saved to `koreader/instapaper/` as HTML or EPUB files depending on your settings
-- If the article has no heading, its Instapaper title is automatically added at the top
+### Read an article
 
-### Long-press an Article
+- **Tap** an article to download and open it in KOReader.
+- Articles are saved to `koreader/matter/` as HTML or EPUB depending on your settings.
+- Newly-saved articles take a few seconds for Matter to process. If you tap an article that isn't ready yet, you'll see a message — try again in a moment.
 
-Long-pressing an article shows its metadata (date saved, word count, reading time, progress, URL) and the following actions:
+### Long-press an article
 
-- **Download** — Save the article locally without opening it or closing the list (useful for downloading multiple articles one by one)
-- **Open** — Download and open the article immediately
-- **Archive** — Move to archive
-- **Star** — Add to starred
-- **Delete** — Permanently delete from Instapaper
+Shows author, site, word count, reading time, progress, and URL, plus these actions:
 
-### Bulk Download
+- **Download** — Save locally without opening (useful for downloading several articles in a row)
+- **Open** — Download and open immediately
+- **Archive** — Move to Archive (`PATCH status=archive`)
+- **Favorite / Unfavorite** — Toggle `is_favorite`
+- **Mark read** — Set `reading_progress = 1.0`
+- **Delete** — Permanently delete from Matter (also removes annotations and tags)
 
-Select **Bulk download...** from the menu to download multiple articles at once:
+> Matter's `inbox` status is one-way: items can be moved from `inbox` to `queue` or `archive`, but cannot be moved back to `inbox`.
 
-- **Folder** — Choose which folder to download from (Unread, Starred, Archive, or any custom folder)
-- **Period** — Limit to articles saved within the last N days (0 = all)
-- **Archive after** — Automatically archive each article after downloading
-- **Delete after** — Automatically delete each article after downloading (mutually exclusive with Archive)
+### Bulk download
 
-### Open Downloads Folder
+Select **Bulk download…** from the menu:
 
-Select **Open downloads folder** to open the local `koreader/instapaper/` directory in KOReader's file manager.
+- **Source** — Inbox, Queue, Favorites, or Archive
+- **Period** — Limit to items updated within the last N days (0 = all)
+- **Archive after** — Automatically archive each item after download
+- **Delete after** — Automatically delete each item after download (mutually exclusive with Archive)
 
-### Clear Downloads Cache
+Bulk download is throttled (~3 seconds between articles) to stay under Matter's content-extraction rate limit (20 requests/min). Plan accordingly — a 100-article bulk run takes ~5 minutes.
 
-Select **Clear downloads cache** to delete all downloaded files and folders (including `.sdr` metadata folders) from the downloads directory. A confirmation dialog is shown before deletion.
-
-### Send Web Links to Instapaper
+### Save URLs from documents
 
 When reading a document that contains web links:
 
-1. **Tap a link** in the document
-2. In the link popup dialog, select **Add to Instapaper**
-3. The link is sent to your Instapaper account:
-   - If **network is online** → Sent immediately
-   - If **Auto connect network** is ON → Network opens automatically and link is sent
-   - If **Auto connect network** is OFF → Link is added to pending queue
-4. Queued links are **automatically sent** when network becomes available
+1. Tap a link in the document.
+2. In the link popup, select **Save to Matter**.
+3. The URL is sent to Matter:
+   - Online → sent immediately
+   - Offline with **Auto connect** ON → network opens and URL is sent
+   - Offline with **Auto connect** OFF → added to the pending pool
 
-#### Process Pending Links Manually
-
-If you have links waiting in the queue:
-
-1. Open the Instapaper menu
-2. Select **Process pending URLs (X)** where X is the number of queued links
-3. Network will connect and all pending links will be sent
+Queued URLs are sent automatically when network becomes available, or on demand via **Process pending URLs (N)** in the menu.
 
 ### Settings
 
-Select **Settings** from the Instapaper menu to configure:
+- **Article list limit** — 25, 50, or 100 (Matter's API caps at 100)
+- **Output format** — HTML or EPUB
+- **Include images (EPUB)** — Download and embed images when EPUB is selected
+- **After download** — None / Archive / Mark read / Archive + Mark read
+- **Auto connect network** — Whether saving a URL while offline should bring the network up
+- **Cache folder** — Custom download directory
 
-- **Article list limit** — Number of articles fetched per request: 10, 25, 50, 100, 200, or 500 (default: 50)
-- **Output format** — Save articles as **HTML** (default) or **EPUB**
-- **Include images (EPUB)** — When EPUB format is selected, optionally download and embed article images into the EPUB file (ON/OFF)
-- **After download** — Action to perform after downloading individual articles (tap or long-press → Download/Open):
-  - **None** (default) — No action, article stays in its current folder
-  - **Archive only** — Move article to Archive folder
-  - **Archive + Mark read** — Move to Archive and mark as 100% read
-- **Auto connect network** — When adding links to Instapaper:
-  - **ON** (default) — Automatically open network connection and send immediately
-  - **OFF** — Add to pending queue without connecting; links are sent when network is opened elsewhere
+## Implementation notes
 
-## Implementation Details
+### API
 
-This plugin uses the **Instapaper Full API** (OAuth 1.0a):
+Matter's public API:
 
-### Authentication
-- **xAuth login**: `/api/1/oauth/access_token` with username/password → OAuth tokens
-- **HMAC-SHA1 signing**: All API requests are signed using `openssl.hmac`
-- **Persistent storage**: OAuth tokens saved in `settings/instapaper.lua`
+- `GET /me` — verify token, get account info
+- `GET /items` — list items, filter by `status` / `is_favorite` / `tag` / `updated_since`
+- `GET /items/{id}?include=markdown` — fetch an item with its parsed markdown body
+- `POST /items` — save a new URL (`{url, status}`)
+- `PATCH /items/{id}` — update `status`, `is_favorite`, or `reading_progress`
+- `DELETE /items/{id}` — permanently remove an item
+- `GET /tags` — list tags
+- `GET /search?query=…&type=items` — full-text search
 
-### API Endpoints
-- **`/api/1/bookmarks/list`** — Fetch articles (with folder filtering)
-- **`/api/1/bookmarks/get_text`** — Download article HTML
-- **`/api/1/bookmarks/add`** — Add a new bookmark (URL) to Instapaper
-- **`/api/1/bookmarks/archive`** — Archive an article
-- **`/api/1/bookmarks/update_read_progress`** — Update reading progress on an article
-- **`/api/1/bookmarks/delete`** — Delete an article
-- **`/api/1/bookmarks/star`** — Star an article
-- **`/api/1/folders/list`** — Fetch user-created folders
+### Rate limits
 
-### Offline Queue
-- Pending links are stored in `settings/instapaper_pending.lua`
-- Each queued item contains: URL, title, and timestamp
-- Queue is automatically processed when:
-  - Network connection is established (`onNetworkConnected` event)
-  - Plugin loads and network is already online (`onReaderReady` event)
-  - User manually triggers **Process pending URLs** from the menu
+- 120 reads/min, 30 writes/min, 10 saves/min, **20 markdown extractions/min**, 5 requests/sec burst.
+- Saves can take 20–60 seconds to finish processing before content is available.
 
-### OAuth 1.0a Signature
-The plugin implements RFC 5849 OAuth 1.0a signature generation:
-1. Percent-encode all parameters (RFC 3986)
-2. Build signature base string (method + URL + sorted params)
-3. Sign with HMAC-SHA1 using consumer secret + token secret
-4. Base64-encode and add to Authorization header
+### Markdown rendering
 
-## API Documentation
+`matter_markdown.lua` is a small, pragmatic Markdown → HTML converter calibrated for Matter's extractor output. It handles ATX headings, paragraphs, fenced/indented code, blockquotes, nested ordered/unordered lists, horizontal rules, bold/italic/strikethrough, inline code, links, images, autolinks, and **GFM-style footnotes** (`[^id]` references with `[^id]:` definitions, rendered as a numbered footnote section with backreferences).
 
-- Simple API: https://www.instapaper.com/api/simple
-- Full API: https://www.instapaper.com/api/full
+For EPUB output, `matter_epub.lua` further balances the HTML through crengine (when available), rewrites image references, optionally downloads and embeds images, and packages everything as a standards-compliant EPUB 2.
 
 ## Troubleshooting
 
-### "Please set API credentials first"
-You need to obtain OAuth consumer credentials from Instapaper first. See **Setup** section above.
+### "Please set your Matter API token first"
+Generate one at <https://web.getmatter.com/settings> and paste it via **Set API token**.
 
-### "Login failed"
-- Check your username/email and password
-- Verify your consumer key and secret are correct
-- Ensure you have network connectivity
+### "Token rejected (401)"
+The token is invalid or revoked. Generating a new token in Matter automatically revokes the previous one. Generate a fresh token and paste it again.
 
-### Articles won't download
-- Check network connection
-- Verify you're still logged in (tokens may have expired)
-- Try logging out and back in
+### "This token is valid but Matter Pro is required for API access"
+The API requires Matter Pro. Upgrade at <https://web.getmatter.com/settings>.
+
+### "Article is still being processed"
+Matter does content extraction asynchronously. Wait 20–60 seconds and try again.
 
 ## Development
 
-This plugin was developed with assistance from [Windsurf](https://codeium.com/windsurf), an AI-powered code editor.
+Originally forked from a KOReader Instapaper plugin. The Instapaper-specific OAuth 1.0a machinery has been removed; the markdown converter and EPUB packager are new.
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 (GPL-3.0). See the [LICENSE](LICENSE) file for details.
+GNU General Public License v3.0 (GPL-3.0). See the [LICENSE](LICENSE) file.

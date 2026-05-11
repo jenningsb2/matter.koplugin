@@ -1,7 +1,7 @@
 local _ = require("gettext")
 return {
-    name = "instapaper",
-    fullname = _("Instapaper"),
-    description = _([[Download and read articles saved in Instapaper.]]),
-    version = "1.3.1",
+    name = "matter",
+    fullname = _("Matter"),
+    description = _([[Download and read articles saved in Matter.]]),
+    version = "0.1.0",
 }
