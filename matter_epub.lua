@@ -5,9 +5,9 @@
 
 local Version = require("version")
 local http = require("socket.http")
+local https = require("ssl.https")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
-local ltn12 = require("ltn12")
 local socketutil = require("socketutil")
 local urlmod = require("socket.url")
 local util = require("util")
@@ -51,11 +51,12 @@ end
 
 local function downloadImageToMemory(url)
     local sink = {}
+    local client = url:match("^https:") and https or http
     socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
-    local ok, code, headers = http.request{
+    local ok, code, headers = client.request{
         url     = url,
         method  = "GET",
-        sink    = ltn12.sink.table(sink),
+        sink    = socketutil.table_sink(sink),
         headers = {
             ["Accept-Encoding"] = "identity",
             ["User-Agent"]      = "KOReader Matter",

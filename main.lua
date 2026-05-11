@@ -88,7 +88,7 @@ function Matter:apiRequest(opts)
         url     = url,
         method  = method,
         headers = headers,
-        sink    = ltn12.sink.table(sink),
+        sink    = socketutil.table_sink(sink),
     }
     if body_str then req.source = ltn12.source.string(body_str) end
 
@@ -819,7 +819,15 @@ end
 
 function Matter:buildItemMetaTitle(item)
     local lines = { item.title or _("Untitled") }
-    if item.author then lines[#lines + 1] = _("Author: ") .. tostring(item.author) end
+    local author_name
+    if type(item.author) == "table" then
+        author_name = item.author.name
+    elseif type(item.author) == "string" then
+        author_name = item.author
+    end
+    if author_name and author_name ~= "" then
+        lines[#lines + 1] = _("Author: ") .. author_name
+    end
     if item.site_name then lines[#lines + 1] = _("Site: ") .. tostring(item.site_name) end
     if item.word_count and item.word_count > 0 then
         local mins = math.ceil(item.word_count / 200)
@@ -935,22 +943,32 @@ function Matter:saveHtmlDocument(item, html)
     return filepath
 end
 
+function Matter:notifyBookMetadataChanged(filepath)
+    if type(filepath) ~= "string" or filepath == "" then return end
+    local Event = require("ui/event")
+    UIManager:broadcastEvent(Event:new("InvalidateMetadataCache", filepath))
+    UIManager:broadcastEvent(Event:new("BookMetadataChanged"))
+end
+
 function Matter:saveItemFromMarkdown(item, markdown)
     local Markdown = require("matter_markdown")
     local html = Markdown.toHtmlDocument(markdown, item.title)
     local fmt = self.output_format or "html"
+    local filepath
     if fmt == "epub" then
         local MatterEpub = require("matter_epub")
-        local filepath, err = MatterEpub.createEpub(
+        local err
+        filepath, err = MatterEpub.createEpub(
             item, html, self:getDownloadDir(), self.include_images)
         if not filepath then
             logger.warn("Matter: EPUB creation failed, falling back to HTML", err)
-            return self:saveHtmlDocument(item, html)
+            filepath = self:saveHtmlDocument(item, html)
         end
-        return filepath
     else
-        return self:saveHtmlDocument(item, html)
+        filepath = self:saveHtmlDocument(item, html)
     end
+    self:notifyBookMetadataChanged(filepath)
+    return filepath
 end
 
 -- Apply the configured after-download action to an item.
