@@ -185,19 +185,22 @@ function Matter:init()
 end
 
 function Matter:onReaderReady()
-    if self:countPending() > 0 then
-        if NetworkMgr:isOnline() then
-            UIManager:scheduleIn(2, function()
+    if NetworkMgr:isOnline() then
+        UIManager:scheduleIn(2, function()
+            if self:countPending() > 0 then
                 self:drainPendingQueue({ silent = true })
-            end)
-        end
+            end
+            self:drainPendingProgress({ silent = true })
+        end)
     end
 end
 
 function Matter:onNetworkConnected()
-    if self:countPending() == 0 then return end
     UIManager:scheduleIn(1, function()
-        self:drainPendingQueue({ silent = false })
+        if self:countPending() > 0 then
+            self:drainPendingQueue({ silent = false })
+        end
+        self:drainPendingProgress({ silent = true })
     end)
 end
 
@@ -214,6 +217,8 @@ function Matter:loadSettings()
     self.cache_folder          = self.settings:readSetting("cache_folder")
     self.auto_connect_network  = self.settings:readSetting("auto_connect_network")
     if self.auto_connect_network == nil then self.auto_connect_network = true end
+    self.auto_sync_progress    = self.settings:readSetting("auto_sync_progress")
+    if self.auto_sync_progress == nil then self.auto_sync_progress = true end
 end
 
 function Matter:saveSettings()
@@ -226,6 +231,7 @@ function Matter:saveSettings()
     self.settings:saveSetting("after_download_action", self.after_download_action)
     self.settings:saveSetting("cache_folder",          self.cache_folder)
     self.settings:saveSetting("auto_connect_network",  self.auto_connect_network)
+    self.settings:saveSetting("auto_sync_progress",    self.auto_sync_progress)
     self.settings:flush()
 end
 
@@ -461,6 +467,8 @@ function Matter:showSettingsDialog()
     local cache_folder = self.cache_folder
     local auto_connect = self.auto_connect_network
     if auto_connect == nil then auto_connect = true end
+    local auto_sync = self.auto_sync_progress
+    if auto_sync == nil then auto_sync = true end
 
     local settings_dialog
     local function rebuildSettingsDialog()
@@ -498,6 +506,7 @@ function Matter:showSettingsDialog()
                 .. "\n" .. _("Include images (EPUB): ") .. img_label
                 .. "\n" .. _("After download: ") .. action_label
                 .. "\n" .. _("Auto connect network: ") .. (auto_connect and _("ON") or _("OFF"))
+                .. "\n" .. _("Auto-sync progress: ") .. (auto_sync and _("ON") or _("OFF"))
                 .. "\n" .. _("Cache folder: ") .. cache_label,
             buttons = {
                 {
@@ -534,6 +543,13 @@ function Matter:showSettingsDialog()
                           auto_connect = not auto_connect
                           rebuildSettingsDialog()
                       end },
+                    { text = _("Auto-sync: ") .. (auto_sync and _("ON") or _("OFF")),
+                      callback = function()
+                          auto_sync = not auto_sync
+                          rebuildSettingsDialog()
+                      end },
+                },
+                {
                     { text = _("< Cache folder >"), callback = function()
                         UIManager:close(settings_dialog)
                         self:showCacheFolderDialog(function(new_path)
@@ -550,6 +566,7 @@ function Matter:showSettingsDialog()
                         self.include_images = include_images
                         self.after_download_action = after_download_action
                         self.auto_connect_network = auto_connect
+                        self.auto_sync_progress = auto_sync
                         self.cache_folder = cache_folder
                         self:saveSettings()
                         UIManager:show(InfoMessage:new{ text = _("Settings saved."), timeout = 2 })
@@ -935,21 +952,30 @@ function Matter:downloadAndOpenItem(item)
 
     self:applyAfterDownload(item)
 
-    -- Apply Matter's reading_progress only on first open. If a local sidecar
-    -- already exists, KOReader's stored position wins (it's likely more recent
-    -- and certainly more precise than Matter's percentage).
-    local first_open = not hasLocalProgress(filepath)
+    -- Smart pull: pick whichever progress is more advanced.
+    -- - First open (no sidecar): use Matter's progress.
+    -- - Sidecar exists: if Matter > local, jump to Matter; otherwise KOReader
+    --   resumes at its local position automatically. This handles the
+    --   "read elsewhere since last KOReader session" case without overwriting
+    --   a more-recent local position.
     local matter_progress = tonumber(item.reading_progress) or 0
+    local local_progress = 0
+    if hasLocalProgress(filepath) then
+        local DocSettings = require("docsettings")
+        local ds = DocSettings:open(filepath)
+        local lp = ds:readSetting("percent_finished")
+        if type(lp) == "number" and lp > 0 then local_progress = lp end
+    end
+    local should_jump = self.auto_sync_progress and matter_progress > local_progress
 
     local ReaderUI = require("apps/reader/readerui")
     ReaderUI:showReader(filepath)
 
-    if first_open and matter_progress > 0 then
+    if should_jump and matter_progress > 0 then
         local pct = math.floor(matter_progress * 100 + 0.5)
         if pct < 1 then pct = 1 end
         if pct > 100 then pct = 100 end
         local Event = require("ui/event")
-        -- Wait for the reader to finish its initial layout before jumping.
         UIManager:scheduleIn(1.5, function()
             if ReaderUI.instance then
                 ReaderUI.instance:handleEvent(Event:new("GoToPercent", pct))
@@ -1514,6 +1540,96 @@ function Matter:processPendingPool()
     NetworkMgr:runWhenOnline(function()
         self:drainPendingQueue({ silent = false })
     end)
+end
+
+--------------------------------------------------------------------
+-- Auto-sync progress on document close
+--------------------------------------------------------------------
+
+-- Pending progress updates, keyed by item id. Each later update overwrites
+-- the previous one for the same item, so we never push stale percentages.
+function Matter:queueProgressUpdate(item_id, percent)
+    if not self.pending_pool then self:loadPendingPool() end
+    local pending = self.pending_pool:readSetting("pending_progress") or {}
+    pending[item_id] = { percent = percent, ts = os.time() }
+    self.pending_pool:saveSetting("pending_progress", pending)
+    self.pending_pool:flush()
+end
+
+function Matter:drainPendingProgress(opts)
+    opts = opts or {}
+    if not self:isLoggedIn() then return end
+    if not NetworkMgr:isOnline() then return end
+    if not self.pending_pool then self:loadPendingPool() end
+
+    local pending = self.pending_pool:readSetting("pending_progress") or {}
+    if not next(pending) then return end
+
+    local remaining = {}
+    local sent = 0
+    for item_id, entry in pairs(pending) do
+        local ok = self:apiRequest{
+            method = "PATCH", path = "/items/" .. item_id,
+            body_table = { reading_progress = entry.percent },
+        }
+        if ok then
+            sent = sent + 1
+        else
+            remaining[item_id] = entry
+        end
+    end
+    self.pending_pool:saveSetting("pending_progress", remaining)
+    self.pending_pool:flush()
+    if sent > 0 and not opts.silent then
+        local Notification = require("ui/widget/notification")
+        UIManager:show(Notification:new{
+            text = T(_("Synced %1 progress update(s) to Matter."), sent),
+        })
+    end
+end
+
+-- Fire-and-forget push for a single item's progress, queuing on failure.
+function Matter:pushProgressForItem(item_id, percent)
+    if not item_id or type(percent) ~= "number" then return end
+    if percent < 0 then percent = 0 end
+    if percent > 1 then percent = 1 end
+    if not self:isLoggedIn() then
+        self:queueProgressUpdate(item_id, percent)
+        return
+    end
+    if not NetworkMgr:isOnline() then
+        self:queueProgressUpdate(item_id, percent)
+        return
+    end
+    local ok = self:apiRequest{
+        method = "PATCH", path = "/items/" .. item_id,
+        body_table = { reading_progress = percent },
+    }
+    if not ok then self:queueProgressUpdate(item_id, percent) end
+end
+
+-- Called by KOReader when a document is being closed. If the document is a
+-- Matter download and auto-sync is enabled, push the final progress upstream.
+function Matter:onCloseDocument()
+    if not self.auto_sync_progress then return end
+    if not self.ui or not self.ui.document then return end
+    local doc_path = self.ui.document.file
+    if type(doc_path) ~= "string" or doc_path == "" then return end
+
+    local our_dir = self:getDownloadDir()
+    if doc_path:sub(1, #our_dir) ~= our_dir then return end
+
+    local basename = doc_path:match("([^/]+)$") or ""
+    local item_id = basename:match("^(itm_[%w]+)_")
+    if not item_id then return end
+
+    local percent
+    if self.ui.doc_settings then
+        percent = self.ui.doc_settings:readSetting("percent_finished")
+    end
+    if type(percent) ~= "number" then return end
+
+    self:pushProgressForItem(item_id, percent)
 end
 
 function Matter:saveLinkFromDocument(url, title)
