@@ -1593,21 +1593,25 @@ function Matter:queueProgressUpdate(item_id, percent)
 end
 
 -- Push `percent` to Matter only if it would *advance* the item's progress.
--- Returns one of: "pushed", "skipped_already_ahead", "failed".
+-- Returns one of: "pushed", "skipped_already_ahead", "skipped_zero", "failed".
 -- This prevents auto-push from overwriting a more-recent read on web/mobile
 -- with a stale local position from KOReader.
 function Matter:safePushProgress(item_id, percent)
+    -- Never push a zero/near-zero progress: it can't advance Matter's state,
+    -- and if Matter is at some non-zero value this would regress it.
+    if percent <= 0.001 then return "skipped_zero" end
+
+    -- Verify Matter's current value before pushing. If we can't read it
+    -- (network, 5xx, transient outage), do NOT push — a blind PATCH risks
+    -- writing a regression. Caller is expected to queue for retry.
     local ok_get, body = self:apiRequest{
         method = "GET", path = "/items/" .. item_id,
     }
-    if ok_get then
-        local data = self:decodeJson(body)
-        local current = data and tonumber(data.reading_progress) or 0
-        if current >= percent then return "skipped_already_ahead", current end
-    end
-    -- If GET failed (network, 5xx, etc.) we don't know Matter's current value.
-    -- Push anyway and let the server be authoritative; this matches the
-    -- behaviour before this guard existed.
+    if not ok_get then return "failed" end
+    local data = self:decodeJson(body)
+    local current = data and tonumber(data.reading_progress) or 0
+    if current >= percent then return "skipped_already_ahead", current end
+
     local ok = self:apiRequest{
         method = "PATCH", path = "/items/" .. item_id,
         body_table = { reading_progress = percent },
