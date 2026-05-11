@@ -1,0 +1,25 @@
+{
+  "object": "item",
+  "id": "itm_TEST01",
+  "title": "Concerning Spoons",
+  "url": "https://example.com/articles/concerning-spoons",
+  "site_name": "Example Magazine",
+  "author": {
+    "object": "author",
+    "id": "aut_test",
+    "name": "Jane Doe"
+  },
+  "processing_status": "completed",
+  "content_type": "article",
+  "word_count": 312,
+  "image_url": "https://example.com/cover.jpg",
+  "excerpt": "A short, made-up piece used to exercise the markdown converter and the EPUB packager. Designed to hit every code path in matter_markdown.lua without copying any real article.",
+  "tags": [],
+  "status": "queue",
+  "is_favorite": false,
+  "reading_progress": 0.0,
+  "updated_at": "2026-05-11T18:00:00Z",
+  "library_position": 1000000000000000000,
+  "inbox_position": null,
+  "markdown": "On a Thursday in September I sat down with a spoon\\. It cost $4\\.95 at the corner store\\. I had bought it earlier that afternoon\\. The spoon, as you might expect, was a *fine* example of its kind\\.\n\nThis is the kind of paragraph one writes when one has nothing in particular to say about spoons\\. It contains a [link to elsewhere](https://example.com/elsewhere) and a small image:\n\n![A spoon](https://example.com/spoon.jpg)\n\n#### A short history\n\nThe spoon, as a category, predates written history\\. The earliest examples were shaped from shells\\. Bronze followed, then silver, then stainless steel\\. Each material brought new problems\\. Silver tarnishes\\. Bronze is heavy\\. Plastic is, by some definitions, not really a spoon at all\\.\n\n##### Spoons in folklore\n\nIn many cultures the spoon has been associated with hospitality\\. To offer a guest a spoon is, in some sense, to acknowledge that they exist\\. This is documented elsewhere[^folk]\\.\n\n#### Three claims\n\n- Spoons are useful\\.\n- Spoons are common\\.\n- Spoons are, on balance, underrated\\.\n\n##### Closing\n\n> *The spoon is, finally, an idea\\.*\n\nA piece of code, for reasons that don't matter:\n\n```python\ndef stir(t, n=20):\n    for _ in range(n):\n        t.stir()\n```\n\n[^folk]: This footnote exercises GFM\\-style footnotes\\. It contains a [link](https://example.com/footnote) so we cover that path too\\."
+}

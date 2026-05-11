@@ -1,0 +1,3 @@
+# Local-only test fixture: drop a real Matter API response here for richer
+# testing without committing copyrighted article content.
+tests/fixtures/private_response.json
