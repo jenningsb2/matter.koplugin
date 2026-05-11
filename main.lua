@@ -259,7 +259,10 @@ function Matter:onNetworkConnected()
         if self:countPending() > 0 then
             self:drainPendingQueue({ silent = false })
         end
-        self:drainPendingProgress({ silent = true })
+        -- Surface progress drains on reconnect so the user can see queued
+        -- offline reads actually making it to Matter. ReaderReady drains stay
+        -- silent because they fire frequently and would be noisy.
+        self:drainPendingProgress({ silent = false })
     end)
 end
 
@@ -394,6 +397,17 @@ function Matter:addToMainMenu(menu_items)
                     end
                 end,
                 callback = function() self:processPendingPool() end,
+            },
+            {
+                text_func = function()
+                    local count = self:countPendingProgress()
+                    if count > 0 then
+                        return T(_("Process pending syncs (%1)"), tostring(count))
+                    else
+                        return _("Process pending syncs")
+                    end
+                end,
+                callback = function() self:processPendingProgress() end,
                 separator = true,
             },
             {
@@ -1590,6 +1604,29 @@ function Matter:queueProgressUpdate(item_id, percent)
     pending[item_id] = { percent = percent, ts = os.time() }
     self.pending_pool:saveSetting("pending_progress", pending)
     self.pending_pool:flush()
+end
+
+function Matter:countPendingProgress()
+    if not self.pending_pool then self:loadPendingPool() end
+    local pending = self.pending_pool:readSetting("pending_progress") or {}
+    local n = 0
+    for _ in pairs(pending) do n = n + 1 end
+    return n
+end
+
+-- User-initiated drain of the pending progress queue.
+function Matter:processPendingProgress()
+    if not self:isLoggedIn() then
+        UIManager:show(InfoMessage:new{ text = _("Please set your Matter API token first.") })
+        return
+    end
+    if self:countPendingProgress() == 0 then
+        UIManager:show(InfoMessage:new{ text = _("No pending syncs."), timeout = 2 })
+        return
+    end
+    NetworkMgr:runWhenOnline(function()
+        self:drainPendingProgress({ silent = false })
+    end)
 end
 
 -- Push `percent` to Matter only if it would *advance* the item's progress.
