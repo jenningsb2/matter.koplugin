@@ -791,12 +791,18 @@ function Matter:showItemActions(item, parent_menu, query, title)
                     self:patchItem(item.id, { reading_progress = 1.0 },
                         _("Marked read."), parent_menu, query, title)
                 end },
+                { text = _("Sync progress"), callback = function()
+                    UIManager:close(actions_dialog)
+                    NetworkMgr:runWhenOnline(function()
+                        self:syncProgressToMatter(item)
+                    end)
+                end },
+            },
+            {
                 { text = _("Delete"), callback = function()
                     UIManager:close(actions_dialog)
                     self:deleteItem(item.id, parent_menu, query, title)
                 end },
-            },
-            {
                 { text = _("Cancel"), callback = function()
                     UIManager:close(actions_dialog)
                 end },
@@ -898,6 +904,17 @@ function Matter:downloadItemOnly(item)
     self:applyAfterDownload(item)
 end
 
+-- KOReader's sidecar convention: foo.epub -> foo.sdr/metadata.epub.lua
+local function sidecarDirFor(filepath)
+    return (filepath:gsub("%.[^./]+$", "")) .. ".sdr"
+end
+
+local function hasLocalProgress(filepath)
+    local sdr = sidecarDirFor(filepath)
+    local attr = lfs.attributes(sdr, "mode")
+    return attr == "directory"
+end
+
 function Matter:downloadAndOpenItem(item)
     UIManager:show(InfoMessage:new{ text = _("Downloading article..."), timeout = 1 })
 
@@ -918,13 +935,80 @@ function Matter:downloadAndOpenItem(item)
 
     self:applyAfterDownload(item)
 
+    -- Apply Matter's reading_progress only on first open. If a local sidecar
+    -- already exists, KOReader's stored position wins (it's likely more recent
+    -- and certainly more precise than Matter's percentage).
+    local first_open = not hasLocalProgress(filepath)
+    local matter_progress = tonumber(item.reading_progress) or 0
+
     local ReaderUI = require("apps/reader/readerui")
     ReaderUI:showReader(filepath)
+
+    if first_open and matter_progress > 0 then
+        local pct = math.floor(matter_progress * 100 + 0.5)
+        if pct < 1 then pct = 1 end
+        if pct > 100 then pct = 100 end
+        local Event = require("ui/event")
+        -- Wait for the reader to finish its initial layout before jumping.
+        UIManager:scheduleIn(1.5, function()
+            if ReaderUI.instance then
+                ReaderUI.instance:handleEvent(Event:new("GoToPercent", pct))
+            end
+        end)
+    end
 end
 
 --------------------------------------------------------------------
 -- Item write operations
 --------------------------------------------------------------------
+
+-- Locate the cached file for an item by id prefix, returning the path or nil.
+function Matter:findCachedFile(item_id)
+    local dir = self:getDownloadDir()
+    if not lfs.attributes(dir, "mode") then return nil end
+    for entry in lfs.dir(dir) do
+        if entry ~= "." and entry ~= ".."
+            and entry:sub(1, #item_id + 1) == (item_id .. "_") then
+            local full = dir .. "/" .. entry
+            if lfs.attributes(full, "mode") == "file" then return full end
+        end
+    end
+    return nil
+end
+
+-- Push KOReader's local reading progress for an item back up to Matter.
+function Matter:syncProgressToMatter(item)
+    local filepath = self:findCachedFile(item.id)
+    if not filepath then
+        UIManager:show(InfoMessage:new{
+            text = _("This item hasn't been downloaded yet. Open it once to track progress locally."),
+        })
+        return
+    end
+
+    local DocSettings = require("docsettings")
+    local doc_settings = DocSettings:open(filepath)
+    local percent = doc_settings:readSetting("percent_finished")
+    if type(percent) ~= "number" then
+        UIManager:show(InfoMessage:new{
+            text = _("No local reading progress found. Open the article in KOReader first."),
+        })
+        return
+    end
+    if percent < 0 then percent = 0 end
+    if percent > 1 then percent = 1 end
+
+    local ok, body, code = self:apiRequest{
+        method = "PATCH", path = "/items/" .. item.id,
+        body_table = { reading_progress = percent },
+    }
+    UIManager:show(InfoMessage:new{
+        text = ok
+            and T(_("Synced progress to Matter: %1%%"), math.floor(percent * 100 + 0.5))
+            or T(_("Sync failed: %1"), self:errorMessage(body, code)),
+        timeout = 2,
+    })
+end
 
 function Matter:patchItem(item_id, patch, success_text, parent_menu, query, title)
     local ok, body, code = self:apiRequest{
