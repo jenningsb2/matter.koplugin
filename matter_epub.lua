@@ -148,6 +148,93 @@ local function rewriteImages(html, base_url)
 end
 
 --------------------------------------------------------------------
+-- Heading -> table-of-contents extraction
+--------------------------------------------------------------------
+
+-- Strip HTML tags and decode common entities so heading text is plain.
+local function plainTextFromHtml(s)
+    if not s then return "" end
+    s = s:gsub("<[^>]+>", "")
+    s = s
+        :gsub("&nbsp;", " ")
+        :gsub("&amp;", "&")
+        :gsub("&lt;", "<")
+        :gsub("&gt;", ">")
+        :gsub("&quot;", '"')
+        :gsub("&apos;", "'")
+        :gsub("&#(%d+);", function(n)
+            local code = tonumber(n)
+            if code and code < 128 then return string.char(code) end
+            -- Leave higher codepoints alone; KOReader's NCX parser handles
+            -- numeric entities fine. Re-emit verbatim.
+            return "&#" .. n .. ";"
+        end)
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    return s
+end
+
+-- Re-escape plain text for inclusion in an XML element body.
+local function xmlEscape(s)
+    return (s
+        :gsub("&", "&amp;")
+        :gsub("<", "&lt;")
+        :gsub(">", "&gt;"))
+end
+
+-- Scan `body_content` for h1-h6 tags, ensure each has an id attribute, and
+-- return (rewritten_body, entries). `entries` is an ordered list of
+-- { level, text, anchor }.
+local function extractToc(body_content)
+    local entries = {}
+    local counter = 0
+    local rewritten = body_content:gsub(
+        "<[hH]([1-6])([^>]*)>(.-)</[hH]%1%s*>",
+        function(level, attrs, inner)
+            local plain = plainTextFromHtml(inner)
+            if plain == "" then
+                return nil  -- keep original
+            end
+            counter = counter + 1
+            local existing_id =
+                attrs:match('id%s*=%s*"([^"]*)"')
+                or attrs:match("id%s*=%s*'([^']*)'")
+            local anchor
+            if existing_id and existing_id ~= "" then
+                anchor = existing_id
+            else
+                anchor = "mh" .. counter
+                attrs = attrs .. ' id="' .. anchor .. '"'
+            end
+            entries[#entries + 1] = {
+                level = tonumber(level),
+                text = plain,
+                anchor = anchor,
+            }
+            return "<h" .. level .. attrs .. ">" .. inner .. "</h" .. level .. ">"
+        end)
+    return rewritten, entries
+end
+
+-- Build the NCX navMap (and depth) for a list of TOC entries. If empty,
+-- emit a single top-of-document entry so the EPUB still validates.
+local function buildNavMap(entries, fallback_title)
+    if #entries == 0 then
+        return string.format(
+            '    <navPoint id="np1" playOrder="1"><navLabel><text>%s</text></navLabel><content src="content.xhtml"/></navPoint>',
+            xmlEscape(fallback_title)), 1
+    end
+    local parts = {}
+    local max_depth = 1
+    for i, e in ipairs(entries) do
+        if e.level > max_depth then max_depth = e.level end
+        parts[#parts + 1] = string.format(
+            '    <navPoint id="np%d" playOrder="%d"><navLabel><text>%s</text></navLabel><content src="content.xhtml#%s"/></navPoint>',
+            i, i, xmlEscape(e.text), e.anchor)
+    end
+    return table.concat(parts, "\n"), max_depth
+end
+
+--------------------------------------------------------------------
 -- EPUB path helper
 --------------------------------------------------------------------
 
@@ -225,6 +312,10 @@ function MatterEpub.createEpub(item, html, download_dir, include_images)
     body_content = body_content:gsub("(<code[^>]*>)(.-)(</code>)", escapeCodeBlock)
     body_content = body_content:gsub("(<pre[^>]*>)(.-)(</pre>)",   escapeCodeBlock)
 
+    -- Build a real TOC from headings before wrapping in XHTML.
+    local toc_entries
+    body_content, toc_entries = extractToc(body_content)
+
     html = '<?xml version="1.0" encoding="utf-8"?>\n'
         .. '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
         .. '<meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8"/>'
@@ -238,6 +329,36 @@ function MatterEpub.createEpub(item, html, download_dir, include_images)
     if not ok_arch or not Archiver then
         logger.warn("MatterEpub: Archiver not available")
         return nil, "archiver_unavailable"
+    end
+
+    -- Resolve metadata for the OPF.
+    local author_name
+    if type(item.author) == "table" then
+        author_name = item.author.name
+    elseif type(item.author) == "string" then
+        author_name = item.author
+    end
+    local excerpt = type(item.excerpt) == "string" and item.excerpt or nil
+    local site_name = type(item.site_name) == "string" and item.site_name or nil
+    local item_id = type(item.id) == "string" and item.id or "matter_article"
+
+    -- Try to fetch the cover image (item.image_url). Optional; failures
+    -- silently skip the cover so EPUB creation still succeeds.
+    local cover_filename, cover_mimetype, cover_bytes
+    if type(item.image_url) == "string" and item.image_url ~= "" then
+        local content, ct = downloadImageToMemory(item.image_url)
+        if content and #content > 0 then
+            local ext = item.image_url:match("%.([%w]+)%??") or ""
+            ext = ext:lower()
+            if ext == "" and ct and ct ~= "" then
+                ext = mimetype_to_ext[ct] or ""
+            end
+            if ext == "" then ext = "jpg" end
+            cover_filename = "cover." .. ext
+            cover_mimetype = ext_to_mimetype[ext]
+                or (ct ~= "" and ct or "image/jpeg")
+            cover_bytes = content
+        end
     end
 
     local epub_path_tmp = epub_path .. ".tmp"
@@ -258,6 +379,36 @@ function MatterEpub.createEpub(item, html, download_dir, include_images)
   </rootfiles>
 </container>]], mtime)
 
+    -- Build OPF metadata block piecewise so we only emit fields we have.
+    local meta_parts = {}
+    meta_parts[#meta_parts + 1] = "    <dc:identifier id=\"bookid\">urn:matter:"
+        .. xmlEscape(item_id) .. "</dc:identifier>"
+    meta_parts[#meta_parts + 1] = "    <dc:title>" .. escaped_title .. "</dc:title>"
+    meta_parts[#meta_parts + 1] = "    <dc:language>en</dc:language>"
+    if author_name and author_name ~= "" then
+        meta_parts[#meta_parts + 1] = "    <dc:creator>"
+            .. xmlEscape(author_name) .. "</dc:creator>"
+    end
+    if excerpt and excerpt ~= "" then
+        meta_parts[#meta_parts + 1] = "    <dc:description>"
+            .. xmlEscape(excerpt) .. "</dc:description>"
+    end
+    if site_name and site_name ~= "" then
+        meta_parts[#meta_parts + 1] = "    <dc:publisher>"
+            .. xmlEscape(site_name) .. "</dc:publisher>"
+    else
+        meta_parts[#meta_parts + 1] = "    <dc:publisher>Matter</dc:publisher>"
+    end
+    if article_url and article_url ~= "" then
+        meta_parts[#meta_parts + 1] = "    <dc:source>"
+            .. xmlEscape(article_url) .. "</dc:source>"
+    end
+    if cover_filename then
+        meta_parts[#meta_parts + 1] = '    <meta name="cover" content="cover-image"/>'
+    end
+    meta_parts[#meta_parts + 1] = "    <meta name=\"generator\" content=\"KOReader "
+        .. xmlEscape(Version:getCurrentRevision()) .. "\"/>"
+
     local opf_parts = {}
     table.insert(opf_parts, string.format([[
 <?xml version='1.0' encoding='utf-8'?>
@@ -265,15 +416,19 @@ function MatterEpub.createEpub(item, html, download_dir, include_images)
         xmlns:dc="http://purl.org/dc/elements/1.1/"
         unique-identifier="bookid" version="2.0">
   <metadata>
-    <dc:title>%s</dc:title>
-    <dc:publisher>KOReader %s</dc:publisher>
+%s
   </metadata>
   <manifest>
     <item id="ncx"     href="toc.ncx"      media-type="application/x-dtbncx+xml"/>
     <item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>
     <item id="css"     href="stylesheet.css" media-type="text/css"/>
-]], escaped_title, Version:getCurrentRevision()))
+]], table.concat(meta_parts, "\n")))
 
+    if cover_filename then
+        table.insert(opf_parts, string.format(
+            '    <item id="cover-image" href="%s" media-type="%s"/>\n',
+            cover_filename, cover_mimetype))
+    end
     if include_images then
         for i, img in ipairs(images) do
             table.insert(opf_parts, string.format(
@@ -293,28 +448,37 @@ function MatterEpub.createEpub(item, html, download_dir, include_images)
 
     epub:addFileFromMemory("OEBPS/stylesheet.css", "/* Matter */\n", mtime)
 
+    -- TOC navMap built from heading scan; falls back to one entry if no
+    -- headings were found in the article.
+    local nav_map, depth = buildNavMap(toc_entries or {}, escaped_title)
     local toc_ncx = string.format([[
 <?xml version='1.0' encoding='utf-8'?>
 <!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head>
-    <meta name="dtb:uid" content="matter_article"/>
-    <meta name="dtb:depth" content="1"/>
+    <meta name="dtb:uid" content="urn:matter:%s"/>
+    <meta name="dtb:depth" content="%d"/>
     <meta name="dtb:totalPageCount" content="0"/>
     <meta name="dtb:maxPageNumber" content="0"/>
   </head>
   <docTitle><text>%s</text></docTitle>
   <navMap>
-    <navPoint id="navpoint-1" playOrder="1">
-      <navLabel><text>%s</text></navLabel>
-      <content src="content.xhtml"/>
-    </navPoint>
+%s
   </navMap>
 </ncx>
-]], escaped_title, escaped_title)
+]], xmlEscape(item_id), depth, escaped_title, nav_map)
     epub:addFileFromMemory("OEBPS/toc.ncx", toc_ncx, mtime)
 
     epub:addFileFromMemory("OEBPS/content.xhtml", html, mtime)
+
+    if cover_filename and cover_bytes then
+        -- SVG covers compress well; everything else is already a compressed
+        -- format, so skip re-deflating.
+        local no_compress = cover_mimetype ~= "image/svg+xml"
+        epub:addFileFromMemory("OEBPS/" .. cover_filename,
+            cover_bytes, no_compress, mtime)
+        cover_bytes = nil  -- release the buffer
+    end
 
     collectgarbage()
     collectgarbage()
