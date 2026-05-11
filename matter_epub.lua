@@ -450,7 +450,7 @@ function MatterEpub.createEpub(item, html, download_dir, include_images)
 
     -- TOC navMap built from heading scan; falls back to one entry if no
     -- headings were found in the article.
-    local nav_map, depth = buildNavMap(toc_entries or {}, escaped_title)
+    local nav_map, depth = buildNavMap(toc_entries or {}, title)
     local toc_ncx = string.format([[
 <?xml version='1.0' encoding='utf-8'?>
 <!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
