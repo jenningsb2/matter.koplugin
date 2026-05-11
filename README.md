@@ -2,7 +2,7 @@
 
 Download and read articles from your [Matter](https://web.getmatter.com) reading library directly in KOReader.
 
-> Forked from a KOReader Instapaper plugin and rewritten against the [Matter Public API](https://docs.getmatter.com/api).
+> Forked in 2025 from [omer-faruq/instapaper.koplugin](https://github.com/omer-faruq/instapaper.koplugin) and rewritten against the [Matter Public API](https://docs.getmatter.com/api).
 
 ## Features
 
@@ -153,9 +153,19 @@ The API requires Matter Pro. Upgrade at <https://web.getmatter.com/settings>.
 ### "Article is still being processed"
 Matter does content extraction asynchronously. Wait 20–60 seconds and try again.
 
-## Development
+## Credits
 
-Originally forked from a KOReader Instapaper plugin. The Instapaper-specific OAuth 1.0a machinery has been removed; the markdown converter and EPUB packager are new.
+This plugin began as a fork of [`omer-faruq/instapaper.koplugin`](https://github.com/omer-faruq/instapaper.koplugin) in 2025. The Instapaper-specific code — OAuth 1.0a signing, xAuth login, the Instapaper API client — has been removed. The Matter API client, the Markdown → HTML converter (`matter_markdown.lua`), and the changes to support Matter's data model are new.
+
+Inherited and adapted from the upstream plugin:
+
+- Plugin scaffolding and KOReader integration (menus, settings, dispatcher actions)
+- EPUB packager (`matter_epub.lua`), adapted from `instapaper_epub.lua`
+- Offline pending-URL queue pattern
+- Link-popup "Save to …" integration
+- The `_meta.lua` / file layout conventions
+
+Many thanks to [omer-faruq](https://github.com/omer-faruq) and the contributors of the original Instapaper plugin for the foundation. This project inherits its GPL-3.0 license.
 
 ## License
 

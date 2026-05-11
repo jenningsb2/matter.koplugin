@@ -1,3 +1,8 @@
+-- Adapted from omer-faruq/instapaper.koplugin (GPL-3.0):
+-- https://github.com/omer-faruq/instapaper.koplugin
+-- Changes: renamed module, adjusted for Matter's item shape (id, url),
+-- updated User-Agent and identifiers.
+
 local Version = require("version")
 local http = require("socket.http")
 local lfs = require("libs/libkoreader-lfs")
