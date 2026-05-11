@@ -193,6 +193,62 @@ function Matter:onReaderReady()
             self:drainPendingProgress({ silent = true })
         end)
     end
+    -- If the freshly-opened document is a Matter article, pull Matter's
+    -- current progress and jump forward to it if Matter is further ahead.
+    -- Runs on every open — plugin-initiated, file-manager, auto-resume —
+    -- so the "smart pull" works regardless of how the document was opened.
+    if self.auto_sync_progress then
+        self:syncOpenDocumentFromMatter()
+    end
+end
+
+-- Identify a Matter download and extract its item id from the filename.
+-- Returns (item_id, doc_path) or (nil, nil) if not a Matter file.
+function Matter:identifyOpenMatterDoc()
+    if not self.ui or not self.ui.document then return nil, nil end
+    local doc_path = self.ui.document.file
+    if type(doc_path) ~= "string" or doc_path == "" then return nil, nil end
+    local our_dir = self:getDownloadDir()
+    if doc_path:sub(1, #our_dir) ~= our_dir then return nil, nil end
+    local basename = doc_path:match("([^/]+)$") or ""
+    local item_id = basename:match("^(itm_[%w]+)_")
+    if not item_id then return nil, nil end
+    return item_id, doc_path
+end
+
+function Matter:syncOpenDocumentFromMatter()
+    local item_id = self:identifyOpenMatterDoc()
+    if not item_id then return end
+    if not self:isLoggedIn() then return end
+    if not NetworkMgr:isOnline() then return end
+
+    local ok, body = self:apiRequest{
+        method = "GET", path = "/items/" .. item_id,
+    }
+    if not ok then return end
+    local data = self:decodeJson(body)
+    if not data then return end
+
+    local matter_pct = tonumber(data.reading_progress) or 0
+    local local_pct = 0
+    if self.ui.doc_settings then
+        local lp = self.ui.doc_settings:readSetting("percent_finished")
+        if type(lp) == "number" then local_pct = lp end
+    end
+
+    -- Only jump forward (1% margin avoids spurious jumps on every open).
+    if matter_pct <= local_pct + 0.01 then return end
+
+    local pct = math.floor(matter_pct * 100 + 0.5)
+    if pct < 1 then pct = 1 end
+    if pct > 100 then pct = 100 end
+    local Event = require("ui/event")
+    UIManager:scheduleIn(0.5, function()
+        local ReaderUI = require("apps/reader/readerui")
+        if ReaderUI.instance then
+            ReaderUI.instance:handleEvent(Event:new("GoToPercent", pct))
+        end
+    end)
 end
 
 function Matter:onNetworkConnected()
@@ -921,17 +977,6 @@ function Matter:downloadItemOnly(item)
     self:applyAfterDownload(item)
 end
 
--- KOReader's sidecar convention: foo.epub -> foo.sdr/metadata.epub.lua
-local function sidecarDirFor(filepath)
-    return (filepath:gsub("%.[^./]+$", "")) .. ".sdr"
-end
-
-local function hasLocalProgress(filepath)
-    local sdr = sidecarDirFor(filepath)
-    local attr = lfs.attributes(sdr, "mode")
-    return attr == "directory"
-end
-
 function Matter:downloadAndOpenItem(item)
     UIManager:show(InfoMessage:new{ text = _("Downloading article..."), timeout = 1 })
 
@@ -952,36 +997,13 @@ function Matter:downloadAndOpenItem(item)
 
     self:applyAfterDownload(item)
 
-    -- Smart pull: pick whichever progress is more advanced.
-    -- - First open (no sidecar): use Matter's progress.
-    -- - Sidecar exists: if Matter > local, jump to Matter; otherwise KOReader
-    --   resumes at its local position automatically. This handles the
-    --   "read elsewhere since last KOReader session" case without overwriting
-    --   a more-recent local position.
-    local matter_progress = tonumber(item.reading_progress) or 0
-    local local_progress = 0
-    if hasLocalProgress(filepath) then
-        local DocSettings = require("docsettings")
-        local ds = DocSettings:open(filepath)
-        local lp = ds:readSetting("percent_finished")
-        if type(lp) == "number" and lp > 0 then local_progress = lp end
-    end
-    local should_jump = self.auto_sync_progress and matter_progress > local_progress
+    -- The smart pull (jump forward to Matter's progress if it's ahead) is
+    -- handled by onReaderReady -> syncOpenDocumentFromMatter, which runs for
+    -- *any* open of a Matter file — plugin tap, file manager, KOReader's
+    -- last-book auto-resume — not just this code path.
 
     local ReaderUI = require("apps/reader/readerui")
     ReaderUI:showReader(filepath)
-
-    if should_jump and matter_progress > 0 then
-        local pct = math.floor(matter_progress * 100 + 0.5)
-        if pct < 1 then pct = 1 end
-        if pct > 100 then pct = 100 end
-        local Event = require("ui/event")
-        UIManager:scheduleIn(1.5, function()
-            if ReaderUI.instance then
-                ReaderUI.instance:handleEvent(Event:new("GoToPercent", pct))
-            end
-        end)
-    end
 end
 
 --------------------------------------------------------------------
@@ -1024,16 +1046,27 @@ function Matter:syncProgressToMatter(item)
     if percent < 0 then percent = 0 end
     if percent > 1 then percent = 1 end
 
-    local ok, body, code = self:apiRequest{
-        method = "PATCH", path = "/items/" .. item.id,
-        body_table = { reading_progress = percent },
-    }
-    UIManager:show(InfoMessage:new{
-        text = ok
-            and T(_("Synced progress to Matter: %1%%"), math.floor(percent * 100 + 0.5))
-            or T(_("Sync failed: %1"), self:errorMessage(body, code)),
-        timeout = 2,
-    })
+    local status, current = self:safePushProgress(item.id, percent)
+    if status == "pushed" then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Synced progress to Matter: %1%%"),
+                math.floor(percent * 100 + 0.5)),
+            timeout = 2,
+        })
+    elseif status == "skipped_already_ahead" then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Matter is already at %1%% (local: %2%%). Not downgrading."),
+                math.floor((current or 0) * 100 + 0.5),
+                math.floor(percent * 100 + 0.5)),
+            timeout = 3,
+        })
+    else
+        UIManager:show(InfoMessage:new{
+            text = _("Sync failed. Will retry when online."),
+            timeout = 2,
+        })
+        self:queueProgressUpdate(item.id, percent)
+    end
 end
 
 function Matter:patchItem(item_id, patch, success_text, parent_menu, query, title)
@@ -1556,6 +1589,29 @@ function Matter:queueProgressUpdate(item_id, percent)
     self.pending_pool:flush()
 end
 
+-- Push `percent` to Matter only if it would *advance* the item's progress.
+-- Returns one of: "pushed", "skipped_already_ahead", "failed".
+-- This prevents auto-push from overwriting a more-recent read on web/mobile
+-- with a stale local position from KOReader.
+function Matter:safePushProgress(item_id, percent)
+    local ok_get, body = self:apiRequest{
+        method = "GET", path = "/items/" .. item_id,
+    }
+    if ok_get then
+        local data = self:decodeJson(body)
+        local current = data and tonumber(data.reading_progress) or 0
+        if current >= percent then return "skipped_already_ahead", current end
+    end
+    -- If GET failed (network, 5xx, etc.) we don't know Matter's current value.
+    -- Push anyway and let the server be authoritative; this matches the
+    -- behaviour before this guard existed.
+    local ok = self:apiRequest{
+        method = "PATCH", path = "/items/" .. item_id,
+        body_table = { reading_progress = percent },
+    }
+    return ok and "pushed" or "failed"
+end
+
 function Matter:drainPendingProgress(opts)
     opts = opts or {}
     if not self:isLoggedIn() then return end
@@ -1568,12 +1624,11 @@ function Matter:drainPendingProgress(opts)
     local remaining = {}
     local sent = 0
     for item_id, entry in pairs(pending) do
-        local ok = self:apiRequest{
-            method = "PATCH", path = "/items/" .. item_id,
-            body_table = { reading_progress = entry.percent },
-        }
-        if ok then
-            sent = sent + 1
+        local status = self:safePushProgress(item_id, entry.percent)
+        if status == "pushed" or status == "skipped_already_ahead" then
+            if status == "pushed" then sent = sent + 1 end
+            -- Either way, drop from queue: pushed means done, already-ahead
+            -- means the queued value is stale and would never be valid.
         else
             remaining[item_id] = entry
         end
@@ -1589,6 +1644,9 @@ function Matter:drainPendingProgress(opts)
 end
 
 -- Fire-and-forget push for a single item's progress, queuing on failure.
+-- Won't downgrade Matter's progress — if Matter is already further ahead
+-- (e.g. the user read on web since closing here), the push is silently
+-- skipped instead of clobbering the more-recent value.
 function Matter:pushProgressForItem(item_id, percent)
     if not item_id or type(percent) ~= "number" then return end
     if percent < 0 then percent = 0 end
@@ -1601,11 +1659,8 @@ function Matter:pushProgressForItem(item_id, percent)
         self:queueProgressUpdate(item_id, percent)
         return
     end
-    local ok = self:apiRequest{
-        method = "PATCH", path = "/items/" .. item_id,
-        body_table = { reading_progress = percent },
-    }
-    if not ok then self:queueProgressUpdate(item_id, percent) end
+    local status = self:safePushProgress(item_id, percent)
+    if status == "failed" then self:queueProgressUpdate(item_id, percent) end
 end
 
 -- Called by KOReader when a document is being closed. If the document is a
