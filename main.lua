@@ -203,13 +203,16 @@ function Matter:onReaderReady()
 end
 
 -- Identify a Matter download and extract its item id from the filename.
+-- We match by filename pattern alone (any file basenamed `itm_<id>_…`),
+-- which means moving downloads out of the configured cache folder, or
+-- changing the cache folder setting after the fact, doesn't break sync.
+-- The `itm_` prefix followed by an alphanumeric id is specific enough to
+-- Matter that false positives are not a realistic concern.
 -- Returns (item_id, doc_path) or (nil, nil) if not a Matter file.
 function Matter:identifyOpenMatterDoc()
     if not self.ui or not self.ui.document then return nil, nil end
     local doc_path = self.ui.document.file
     if type(doc_path) ~= "string" or doc_path == "" then return nil, nil end
-    local our_dir = self:getDownloadDir()
-    if doc_path:sub(1, #our_dir) ~= our_dir then return nil, nil end
     local basename = doc_path:match("([^/]+)$") or ""
     local item_id = basename:match("^(itm_[%w]+)_")
     if not item_id then return nil, nil end
@@ -1667,15 +1670,7 @@ end
 -- Matter download and auto-sync is enabled, push the final progress upstream.
 function Matter:onCloseDocument()
     if not self.auto_sync_progress then return end
-    if not self.ui or not self.ui.document then return end
-    local doc_path = self.ui.document.file
-    if type(doc_path) ~= "string" or doc_path == "" then return end
-
-    local our_dir = self:getDownloadDir()
-    if doc_path:sub(1, #our_dir) ~= our_dir then return end
-
-    local basename = doc_path:match("([^/]+)$") or ""
-    local item_id = basename:match("^(itm_[%w]+)_")
+    local item_id = self:identifyOpenMatterDoc()
     if not item_id then return end
 
     local percent
