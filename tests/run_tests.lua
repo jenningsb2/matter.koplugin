@@ -82,7 +82,23 @@ expect_contains("link",
 
 expect_contains("image",
     Markdown.toHtml("![alt](https://example.com/x.jpg)"),
-    { 'src="https://example.com/x.jpg"', 'alt="alt"' })
+    { 'src="https://example.com/x.jpg"', 'alt="alt"', 'max-width:100%' })
+
+expect_contains("image with title",
+    Markdown.toHtml('![alt](https://example.com/x.jpg "Caption")'),
+    { 'src="https://example.com/x.jpg"', 'alt="alt"', 'title="Caption"' })
+
+expect_contains("linked image",
+    Markdown.toHtml("[![](https://example.com/chart.png)](https://example.com/full)"),
+    { '<img src="https://example.com/chart.png" alt=""' })
+
+expect_excludes("linked image does not leak placeholder",
+    Markdown.toHtml("[![](https://example.com/chart.png)](https://example.com/full)"),
+    { "\1", "\2" })
+
+expect_contains("image followed by text becomes separate paragraphs",
+    Markdown.toHtml("![](https://example.com/chart.png)Next paragraph starts here."),
+    { '<p><img src="https://example.com/chart.png" alt=""', "</p>\n<p>Next paragraph starts here.</p>" })
 
 expect_contains("autolink",
     Markdown.toHtml("<https://example.com>"),

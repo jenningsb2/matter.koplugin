@@ -70,10 +70,38 @@ local function process_inline(text, ctx)
         end)
     end
 
-    -- Images: ![alt](url)  — stash before links so the leading ! isn't lost
-    text = text:gsub("!%[([^%]]*)%]%(([^)%s]+)%s*%)", function(alt, url)
-        return stash(string.format('<img src="%s" alt="%s"/>',
-            escape_attr(url), escape_attr(alt)))
+    local function parse_link_target(target)
+        target = target:gsub("^%s+", ""):gsub("%s+$", "")
+        local url, title = target:match('^(%S+)%s+"(.-)"%s*$')
+        if not url then
+            url, title = target:match("^(%S+)%s+'(.-)'%s*$")
+        end
+        if not url then
+            url = target:match("^(%S+)%s*$")
+        end
+        return url, title
+    end
+
+    local function render_image(alt, target)
+        local url, title = parse_link_target(target)
+        if not url then return nil end
+        local title_attr = title and title ~= ""
+            and string.format(' title="%s"', escape_attr(title))
+            or ""
+        return string.format('<img src="%s" alt="%s"%s style="max-width:100%%; height:auto;"/>',
+            escape_attr(url), escape_attr(alt), title_attr)
+    end
+
+    -- Linked images: [![alt](image-url "title")](target-url). Keep only the
+    -- image in the reading output; EPUB generation embeds the image itself.
+    text = text:gsub("%[!%[([^%]]*)%]%(([^%)]+)%)%]%(([^%)]+)%)", function(alt, img_target)
+        return stash(render_image(alt, img_target) or "")
+    end)
+
+    -- Images: ![alt](url "optional title") — stash before links so the
+    -- leading ! isn't lost.
+    text = text:gsub("!%[([^%]]*)%]%(([^%)]+)%)", function(alt, img_target)
+        return stash(render_image(alt, img_target) or "")
     end)
 
     -- Links: [text](url)
@@ -117,7 +145,21 @@ local function split_lines(md)
     md = md:gsub("\t", "    ")
     local lines = {}
     for line in (md .. "\n"):gmatch("([^\n]*)\n") do
-        lines[#lines + 1] = line
+        local linked_img, linked_rest =
+            line:match("^(%[!%[[^%]]*%]%([^%)]+%)%]%([^%)]+%))(%S.*)$")
+        local img, img_rest =
+            line:match("^(!%[[^%]]*%]%([^%)]+%))(%S.*)$")
+        if linked_img and linked_rest and linked_rest ~= "" then
+            lines[#lines + 1] = linked_img
+            lines[#lines + 1] = ""
+            lines[#lines + 1] = linked_rest
+        elseif img and img_rest and img_rest ~= "" then
+            lines[#lines + 1] = img
+            lines[#lines + 1] = ""
+            lines[#lines + 1] = img_rest
+        else
+            lines[#lines + 1] = line
+        end
     end
     return lines
 end

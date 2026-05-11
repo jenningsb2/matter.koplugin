@@ -111,7 +111,8 @@ local function rewriteImages(html, base_url)
 
         if seen[abs_src] then
             local alt = img_tag:match('[Aa][Ll][Tt]%s*=%s*"([^"]*)"') or ""
-            return '<img src="' .. seen[abs_src] .. '" alt="' .. alt .. '"/>'
+            return '<img src="' .. seen[abs_src] .. '" alt="' .. alt
+                .. '" style="max-width:100%; height:auto;"/>'
         end
 
         local ext = abs_src:match("%.([%w]+)%??") or ""
@@ -141,7 +142,8 @@ local function rewriteImages(html, base_url)
         })
 
         local alt = img_tag:match('[Aa][Ll][Tt]%s*=%s*"([^"]*)"') or ""
-        return '<img src="' .. imgpath .. '" alt="' .. alt .. '"/>'
+        return '<img src="' .. imgpath .. '" alt="' .. alt
+            .. '" style="max-width:100%; height:auto;"/>'
     end
 
     local rewritten = html:gsub("(<%s*[Ii][Mm][Gg][^>]*/?%s*>)", processTag)
