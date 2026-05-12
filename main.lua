@@ -157,6 +157,16 @@ function Matter:onMatterBulkDownload()
     return true
 end
 
+function Matter:onMatterPullCurrentProgress()
+    self:pullCurrentDocumentProgress({ notify = true })
+    return true
+end
+
+function Matter:onMatterPushCurrentProgress()
+    self:pushCurrentDocumentProgress({ notify = true })
+    return true
+end
+
 function Matter:onDispatcherRegisterActions()
     Dispatcher:registerAction("matter_inbox",
         { category = "none", event = "MatterInbox", title = _("Matter: inbox"), general = true, })
@@ -168,6 +178,10 @@ function Matter:onDispatcherRegisterActions()
         { category = "none", event = "MatterArchive", title = _("Matter: archive"), general = true, })
     Dispatcher:registerAction("matter_bulk_download",
         { category = "none", event = "MatterBulkDownload", title = _("Matter bulk download"), general = true, separator = true, })
+    Dispatcher:registerAction("matter_pull_current_progress",
+        { category = "none", event = "MatterPullCurrentProgress", title = _("Matter: pull reading progress"), reader = true, })
+    Dispatcher:registerAction("matter_push_current_progress",
+        { category = "none", event = "MatterPushCurrentProgress", title = _("Matter: push reading progress"), reader = true, })
 end
 
 --------------------------------------------------------------------
@@ -193,13 +207,9 @@ function Matter:onReaderReady()
             self:drainPendingProgress({ silent = true })
         end)
     end
-    -- If the freshly-opened document is a Matter article, pull Matter's
-    -- current progress and jump forward to it if Matter is further ahead.
-    -- Runs on every open — plugin-initiated, file-manager, auto-resume —
-    -- so the "smart pull" works regardless of how the document was opened.
-    if self.auto_sync_progress then
-        self:syncOpenDocumentFromMatter()
-    end
+    -- Pull Matter's progress on open only when it would move this device
+    -- forward. Auto-push on close remains controlled separately.
+    self:pullOpenDocumentProgressIfAhead()
 end
 
 -- Identify a Matter download and extract its item id from the filename.
@@ -219,7 +229,14 @@ function Matter:identifyOpenMatterDoc()
     return item_id, doc_path
 end
 
-function Matter:syncOpenDocumentFromMatter()
+function Matter:getOpenDocumentPercent()
+    if not self.ui or not self.ui.doc_settings then return nil end
+    local percent = self.ui.doc_settings:readSetting("percent_finished")
+    if type(percent) ~= "number" then return nil end
+    return percent
+end
+
+function Matter:pullOpenDocumentProgressIfAhead()
     local item_id = self:identifyOpenMatterDoc()
     if not item_id then return end
     if not self:isLoggedIn() then return end
@@ -233,11 +250,7 @@ function Matter:syncOpenDocumentFromMatter()
     if not data then return end
 
     local matter_pct = tonumber(data.reading_progress) or 0
-    local local_pct = 0
-    if self.ui.doc_settings then
-        local lp = self.ui.doc_settings:readSetting("percent_finished")
-        if type(lp) == "number" then local_pct = lp end
-    end
+    local local_pct = self:getOpenDocumentPercent() or 0
 
     -- Only jump forward (1% margin avoids spurious jumps on every open).
     if matter_pct <= local_pct + 0.01 then return end
@@ -245,6 +258,119 @@ function Matter:syncOpenDocumentFromMatter()
     UIManager:scheduleIn(0.5, function()
         self:jumpOpenDocumentToPercent(matter_pct)
     end)
+end
+
+function Matter:pullCurrentDocumentProgress(opts)
+    opts = opts or {}
+    local item_id = self:identifyOpenMatterDoc()
+    if not item_id then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{ text = _("This is not a Matter article."), timeout = 2 })
+        end
+        return false
+    end
+    if not self:isLoggedIn() then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{ text = _("Please set your Matter API token first."), timeout = 2 })
+        end
+        return false
+    end
+    if not NetworkMgr:isOnline() then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{ text = _("Network is offline."), timeout = 2 })
+        end
+        return false
+    end
+
+    local ok, body = self:apiRequest{
+        method = "GET", path = "/items/" .. item_id,
+    }
+    if not ok then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{ text = _("Could not fetch Matter progress."), timeout = 2 })
+        end
+        return false
+    end
+    local data = self:decodeJson(body)
+    if not data then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{ text = _("Could not parse Matter item."), timeout = 2 })
+        end
+        return false
+    end
+
+    local matter_pct = tonumber(data.reading_progress) or 0
+    local jumped, pct = self:jumpOpenDocumentToPercent(matter_pct)
+    if opts.notify then
+        UIManager:show(InfoMessage:new{
+            text = jumped
+                and T(_("Pulled progress from Matter: %1%%"), pct)
+                or _("Open the article first to pull progress."),
+            timeout = 2,
+        })
+    end
+    return jumped
+end
+
+function Matter:pushCurrentDocumentProgress(opts)
+    opts = opts or {}
+    local item_id = self:identifyOpenMatterDoc()
+    if not item_id then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{ text = _("This is not a Matter article."), timeout = 2 })
+        end
+        return false
+    end
+    if not self:isLoggedIn() then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{ text = _("Please set your Matter API token first."), timeout = 2 })
+        end
+        return false
+    end
+    if not NetworkMgr:isOnline() then
+        self:queueProgressUpdate(item_id, self:getOpenDocumentPercent() or 0)
+        if opts.notify then
+            UIManager:show(InfoMessage:new{ text = _("Queued progress sync for when online."), timeout = 2 })
+        end
+        return false
+    end
+
+    local percent = self:getOpenDocumentPercent()
+    if type(percent) ~= "number" then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{ text = _("No local reading progress found."), timeout = 2 })
+        end
+        return false
+    end
+    if percent < 0 then percent = 0 end
+    if percent > 1 then percent = 1 end
+
+    local status, current = self:safePushProgress(item_id, percent)
+    if status == "pushed" then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Pushed progress to Matter: %1%%"),
+                    math.floor(percent * 100 + 0.5)),
+                timeout = 2,
+            })
+        end
+        return true
+    elseif status == "skipped_already_ahead" then
+        if opts.notify then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Matter is already ahead at %1%%."),
+                    math.floor((current or 0) * 100 + 0.5)),
+                timeout = 2,
+            })
+        end
+        return true
+    end
+
+    self:queueProgressUpdate(item_id, percent)
+    if opts.notify then
+        UIManager:show(InfoMessage:new{ text = _("Sync failed. Will retry when online."), timeout = 2 })
+    end
+    return false
 end
 
 function Matter:jumpOpenDocumentToPercent(matter_pct)
@@ -285,8 +411,11 @@ function Matter:loadSettings()
     self.cache_folder          = self.settings:readSetting("cache_folder")
     self.auto_connect_network  = self.settings:readSetting("auto_connect_network")
     if self.auto_connect_network == nil then self.auto_connect_network = true end
-    self.auto_sync_progress    = self.settings:readSetting("auto_sync_progress")
-    if self.auto_sync_progress == nil then self.auto_sync_progress = true end
+    self.auto_push_progress    = self.settings:readSetting("auto_push_progress")
+    if self.auto_push_progress == nil then
+        self.auto_push_progress = self.settings:readSetting("auto_sync_progress")
+    end
+    if self.auto_push_progress == nil then self.auto_push_progress = true end
 end
 
 function Matter:saveSettings()
@@ -299,7 +428,7 @@ function Matter:saveSettings()
     self.settings:saveSetting("after_download_action", self.after_download_action)
     self.settings:saveSetting("cache_folder",          self.cache_folder)
     self.settings:saveSetting("auto_connect_network",  self.auto_connect_network)
-    self.settings:saveSetting("auto_sync_progress",    self.auto_sync_progress)
+    self.settings:saveSetting("auto_push_progress",    self.auto_push_progress)
     self.settings:flush()
 end
 
@@ -414,6 +543,23 @@ function Matter:addToMainMenu(menu_items)
                     end
                 end,
                 callback = function() self:processPendingProgress() end,
+                separator = true,
+            },
+            {
+                text = _("Pull reading progress now"),
+                callback = function()
+                    NetworkMgr:runWhenOnline(function()
+                        self:pullCurrentDocumentProgress({ notify = true })
+                    end)
+                end,
+            },
+            {
+                text = _("Push reading progress now"),
+                callback = function()
+                    NetworkMgr:runWhenOnline(function()
+                        self:pushCurrentDocumentProgress({ notify = true })
+                    end)
+                end,
                 separator = true,
             },
             {
@@ -546,8 +692,8 @@ function Matter:showSettingsDialog()
     local cache_folder = self.cache_folder
     local auto_connect = self.auto_connect_network
     if auto_connect == nil then auto_connect = true end
-    local auto_sync = self.auto_sync_progress
-    if auto_sync == nil then auto_sync = true end
+    local auto_push = self.auto_push_progress
+    if auto_push == nil then auto_push = true end
 
     local settings_dialog
     local function rebuildSettingsDialog()
@@ -580,19 +726,20 @@ function Matter:showSettingsDialog()
 
         settings_dialog = ButtonDialog:new{
             title = _("Matter settings")
-                .. "\n" .. _("Article list limit: ") .. limit_label
+                .. "\n" .. _("Auto-push progress on close: ") .. (auto_push and _("ON") or _("OFF"))
                 .. "\n" .. _("Output format: ") .. fmt_label
                 .. "\n" .. _("Include images (EPUB): ") .. img_label
+                .. "\n" .. _("Article list limit: ") .. limit_label
                 .. "\n" .. _("After download: ") .. action_label
                 .. "\n" .. _("Auto connect network: ") .. (auto_connect and _("ON") or _("OFF"))
-                .. "\n" .. _("Auto-sync progress: ") .. (auto_sync and _("ON") or _("OFF"))
                 .. "\n" .. _("Cache folder: ") .. cache_label,
             buttons = {
                 {
-                    { text = _("< Limit >"), callback = function()
-                        limit_idx = (limit_idx % #limit_choices) + 1
-                        rebuildSettingsDialog()
-                    end },
+                    { text = _("Auto-push: ") .. (auto_push and _("ON") or _("OFF")),
+                      callback = function()
+                          auto_push = not auto_push
+                          rebuildSettingsDialog()
+                      end },
                     { text = _("< Format >"), callback = function()
                         output_format = output_format == "html" and "epub" or "html"
                         rebuildSettingsDialog()
@@ -603,6 +750,17 @@ function Matter:showSettingsDialog()
                         include_images = not include_images
                         rebuildSettingsDialog()
                     end },
+                    { text = _("< Limit >"), callback = function()
+                        limit_idx = (limit_idx % #limit_choices) + 1
+                        rebuildSettingsDialog()
+                    end },
+                },
+                {
+                    { text = _("Auto connect: ") .. (auto_connect and _("ON") or _("OFF")),
+                      callback = function()
+                          auto_connect = not auto_connect
+                          rebuildSettingsDialog()
+                      end },
                     { text = _("< After download >"), callback = function()
                         if after_download_action == "none" then
                             after_download_action = "archive"
@@ -615,18 +773,6 @@ function Matter:showSettingsDialog()
                         end
                         rebuildSettingsDialog()
                     end },
-                },
-                {
-                    { text = _("Auto connect: ") .. (auto_connect and _("ON") or _("OFF")),
-                      callback = function()
-                          auto_connect = not auto_connect
-                          rebuildSettingsDialog()
-                      end },
-                    { text = _("Auto-sync: ") .. (auto_sync and _("ON") or _("OFF")),
-                      callback = function()
-                          auto_sync = not auto_sync
-                          rebuildSettingsDialog()
-                      end },
                 },
                 {
                     { text = _("< Cache folder >"), callback = function()
@@ -645,7 +791,7 @@ function Matter:showSettingsDialog()
                         self.include_images = include_images
                         self.after_download_action = after_download_action
                         self.auto_connect_network = auto_connect
-                        self.auto_sync_progress = auto_sync
+                        self.auto_push_progress = auto_push
                         self.cache_folder = cache_folder
                         self:saveSettings()
                         UIManager:show(InfoMessage:new{ text = _("Settings saved."), timeout = 2 })
@@ -1038,10 +1184,8 @@ function Matter:downloadAndOpenItem(item)
 
     self:applyAfterDownload(item)
 
-    -- The smart pull (jump forward to Matter's progress if it's ahead) is
-    -- handled by onReaderReady -> syncOpenDocumentFromMatter, which runs for
-    -- *any* open of a Matter file — plugin tap, file manager, KOReader's
-    -- last-book auto-resume — not just this code path.
+    -- Manual pull/push actions handle explicit progress reconciliation. On
+    -- close, auto-push can still send KOReader's final position upstream.
 
     local ReaderUI = require("apps/reader/readerui")
     ReaderUI:showReader(filepath)
@@ -1629,7 +1773,7 @@ function Matter:processPendingPool()
 end
 
 --------------------------------------------------------------------
--- Auto-sync progress on document close
+-- Auto-push progress on document close
 --------------------------------------------------------------------
 
 -- Pending progress updates, keyed by item id. Each later update overwrites
@@ -1744,9 +1888,9 @@ function Matter:pushProgressForItem(item_id, percent)
 end
 
 -- Called by KOReader when a document is being closed. If the document is a
--- Matter download and auto-sync is enabled, push the final progress upstream.
+-- Matter download and auto-push is enabled, push the final progress upstream.
 function Matter:onCloseDocument()
-    if not self.auto_sync_progress then return end
+    if not self.auto_push_progress then return end
     local item_id = self:identifyOpenMatterDoc()
     if not item_id then return end
 

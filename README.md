@@ -18,6 +18,7 @@ Download and read articles from your [Matter](https://web.getmatter.com) reading
 - **Bulk download** with source filter, period filter, and post-download action
 - **Auto WiFi connect** — triggers network connection automatically when needed
 - **Reading-progress display** in the article list
+- **Reading-progress sync** — pulls Matter progress forward on open, with manual pull/push actions and optional auto-push on close
 - **Save URL to Matter** — Add web links to Matter directly from document link popups
 - **Offline queue** — Links are queued when offline and automatically sent when network becomes available
 - **Open downloads folder** shortcut in the menu
@@ -66,6 +67,16 @@ From the Matter menu:
 - **Tap** an article to download and open it in KOReader.
 - Articles are saved to `koreader/matter/` as HTML or EPUB depending on your settings.
 - Newly-saved articles take a few seconds for Matter to process. If you tap an article that isn't ready yet, you'll see a message — try again in a moment.
+- When a Matter article opens, the plugin checks Matter's `reading_progress` and jumps forward only if Matter is ahead of KOReader. It never jumps backward.
+
+### Reading progress
+
+From the Matter menu while a Matter article is open:
+
+- **Pull reading progress now** — Move KOReader to Matter's current `reading_progress`.
+- **Push reading progress now** — Send KOReader's current position to Matter, unless Matter is already further ahead.
+
+If **Auto-push progress on close** is enabled, closing a Matter article sends KOReader's final position to Matter. Failed or offline pushes are queued and retried later. Pushes are guarded against downgrades, so a stale local position should not overwrite a newer Matter position.
 
 ### Long-press an article
 
@@ -111,6 +122,7 @@ Queued URLs are sent automatically when network becomes available, or on demand 
 - **Include images (EPUB)** — Download and embed images when EPUB is selected
 - **After download** — None / Archive / Mark read / Archive + Mark read
 - **Auto connect network** — Whether saving a URL while offline should bring the network up
+- **Auto-push progress on close** — Send KOReader's final reading position to Matter when closing a Matter article
 - **Cache folder** — Custom download directory
 
 ## Implementation notes
