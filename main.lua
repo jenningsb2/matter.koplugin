@@ -242,16 +242,22 @@ function Matter:syncOpenDocumentFromMatter()
     -- Only jump forward (1% margin avoids spurious jumps on every open).
     if matter_pct <= local_pct + 0.01 then return end
 
+    UIManager:scheduleIn(0.5, function()
+        self:jumpOpenDocumentToPercent(matter_pct)
+    end)
+end
+
+function Matter:jumpOpenDocumentToPercent(matter_pct)
     local pct = math.floor(matter_pct * 100 + 0.5)
     if pct < 1 then pct = 1 end
     if pct > 100 then pct = 100 end
     local Event = require("ui/event")
-    UIManager:scheduleIn(0.5, function()
-        local ReaderUI = require("apps/reader/readerui")
-        if ReaderUI.instance then
-            ReaderUI.instance:handleEvent(Event:new("GoToPercent", pct))
-        end
-    end)
+    local ReaderUI = require("apps/reader/readerui")
+    if ReaderUI.instance then
+        ReaderUI.instance:handleEvent(Event:new("GotoPercent", pct))
+        return true, pct
+    end
+    return false, pct
 end
 
 function Matter:onNetworkConnected()
@@ -1089,12 +1095,24 @@ function Matter:syncProgressToMatter(item)
             timeout = 2,
         })
     elseif status == "skipped_already_ahead" then
-        UIManager:show(InfoMessage:new{
-            text = T(_("Matter is already at %1%% (local: %2%%). Not downgrading."),
-                math.floor((current or 0) * 100 + 0.5),
-                math.floor(percent * 100 + 0.5)),
-            timeout = 3,
-        })
+        local open_item_id = self:identifyOpenMatterDoc()
+        if open_item_id == item.id then
+            local jumped, pct = self:jumpOpenDocumentToPercent(current or 0)
+            UIManager:show(InfoMessage:new{
+                text = jumped
+                    and T(_("Pulled progress from Matter: %1%%"), pct)
+                    or T(_("Matter is ahead at %1%%. Open the article to pull it."),
+                        math.floor((current or 0) * 100 + 0.5)),
+                timeout = 3,
+            })
+        else
+            UIManager:show(InfoMessage:new{
+                text = T(_("Matter is ahead at %1%% (local: %2%%). Open the article to pull it."),
+                    math.floor((current or 0) * 100 + 0.5),
+                    math.floor(percent * 100 + 0.5)),
+                timeout = 3,
+            })
+        end
     else
         UIManager:show(InfoMessage:new{
             text = _("Sync failed. Will retry when online."),
